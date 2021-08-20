@@ -1,5 +1,6 @@
-   rm -rf wf-scratch wf-output scitech
-   find . -name \*.dot -delete
-   find . -name \*.pdf -delete
-   find . -name \*.png -delete
-   find . -name \*.yml -delete
+rm -rf ~/commands.txt   
+rm -rf wf-scratch wf-output scitech
+find . -name \*.dot -delete
+find . -name \*.pdf -delete
+find . -name \*.png -delete
+find . -name \*.yml -delete
