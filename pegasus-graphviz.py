@@ -113,7 +113,12 @@ class File(Node):
         self.cdo_cached     = False
 
     def renderNode(self, renderer):
-        if not self.cdo_dependency:
+        print('Rendering',self.label)
+        if self.label.startswith('CDO'):
+            renderer.renderNode(self.id, self.label, fillcolor="#9f9f9f", shape="parallelogram")
+        elif self.label.startswith('('):
+            renderer.renderNode(self.id, self.label, fillcolor="#ffffff", shape="plaintext")
+        elif not self.cdo_dependency:
             renderer.renderNode(self.id, self.label, fillcolor="#ffed6f", shape="rect")
         else:
             renderer.renderNode(self.id, self.label, fillcolor="#ffffff", shape="diamond")
