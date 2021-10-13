@@ -154,11 +154,17 @@ RUN git clone https://gitlab.jsc.fz-juelich.de/maestro/maestro-core.git \
   && ./configure --prefix=/home/scitech/maestro \
   &&  make install
 
-# Build mocktage
-RUN git clone -b cpp-cdo https://gitlab.jsc.fz-juelich.de/maestro/mocktage.git \
+# Build mocktage from cpp-cdo branch if no MOCKTAGE_SHA supplied
+ARG MOCKTAGE_SHA=cpp-cdo
+ENV MOCKTAGE_BRANCH $MOCKTAGE_SHA
+
+RUN if [[ -z "$MOCKTAGE_SHA" ]] ; then echo "No mocktage branch, using $MOCKTAGE_SHA"; else echo "Using branch $MOCKTAGE_SHA" ; fi && MOCKTAGE_BRANCH=$MOCKTAGE_SHA
+
+RUN git clone https://gitlab.jsc.fz-juelich.de/maestro/mocktage.git \
   && source /opt/rh/devtoolset-9/enable \
   && sudo ln -s /usr/bin/cmake3 /usr/bin/cmake \
   && cd mocktage \
+  && git checkout $MOCKTAGE_SHA \
   && mkdir build \
   && cd build \
   && cmake -DMaestro_ROOT=/home/scitech/maestro -DMOCKTAGE_WITH_CPP=ON -DBOOST_INCLUDEDIR=/usr/include/boost169 -DBOOST_LIBRARYDIR=/usr/lib64/boost169 -DCMAKE_EXE_LINKER_FLAGS='-lrdmacm -libverbs' .. \

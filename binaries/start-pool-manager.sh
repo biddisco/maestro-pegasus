@@ -13,7 +13,7 @@ if [[ -f "$pname" ]]; then
 fi
 
 echo "$time   ./cdo-watcher.sh $pname $tname" > ~/commands.txt
-/home/scitech/shared-data/maestro-binaries/cdo-watcher.sh "$pname" "$tname"
+/home/scitech/shared-data/maestro-test/binaries/cdo-watcher.sh "$pname" "$tname"
 
 time=$(date +"%H:%M:%S")
 echo "$time - terminating pool-manager" >> ~/commands.txt
