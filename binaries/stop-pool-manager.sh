@@ -1,18 +1,18 @@
 #!/bin/bash
 # $1 log-directory
-# $2 stop-file-name
+# $2 stop file name
 
-kname="$1/$2"
+pname="$1/$2"
 
 time=$(date +"%H:%M:%S")
 echo "$time + stop-pool-manager" >> ~/commands.txt
 
-if [[ -f "$kname" ]]; then
-    rm -rf "$kname"
+if [[ -f "$pname" ]]; then
+    rm -rf "pkname"
 fi
 
-touch "$kname"
-echo "stop" >> "$kname"
+touch "$pname"
+echo "stop" >> "$pname"
 
 time=$(date +"%H:%M:%S")
 echo "$time - stop-pool-manager" >> ~/commands.txt
