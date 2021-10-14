@@ -10,7 +10,7 @@ NUM_ARGS="$#"
 frst="${@:1:1}"
 last="${@:(-1):1}"
 
-dname="/home/scitech/shared-data/scratch/"
+dname="/home/scitech/scratch/"
 
 arg_string=""
 for (( j=1; j<((argc-1)); j++ )); do

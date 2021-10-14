@@ -3,7 +3,7 @@
 # $2 Output file
 # $3 Sleep Time
 
-dname="/home/scitech/shared-data/scratch/"
+dname="/home/scitech/scratch/"
 
 time=$(date +"%H:%M:%S")
 echo "$time + process-file $1 $2 $3" >> ~/commands.txt

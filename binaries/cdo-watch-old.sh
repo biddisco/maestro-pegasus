@@ -7,7 +7,7 @@ trap "exit 0" SIGINT
 
 dname=$(dirname $1)
 fname=$(basename $1)
-dname="/home/scitech/shared-data/scratch/"
+dname="/home/scitech/scratch/"
 
 time=$(date +"%H:%M:%S")
 echo "$time + cdo-watcher  $1 $2 Watching in $dname for $fname" >> ~/commands.txt

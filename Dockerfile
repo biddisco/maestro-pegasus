@@ -117,6 +117,8 @@ ENV LC_ALL en_US.UTF-8
 ENV PATH="/home/scitech/pegasus/dist/pegasus/bin:${PATH}:/usr/lib64/mpich/bin:/home/scitech/Montage/bin"
 ENV PYTHONPATH="/home/scitech/pegasus/dist/pegasus/lib64/python3.6/site-packages"
 
+WORKDIR /home/scitech/shared-data
+
 CMD ["jupyter", "lab", "--notebook-dir=/home/scitech/shared-data", "--port=8888", "--no-browser", "--ip=0.0.0.0", "--ServerApp.token=''", "--allow-root" ]
 
 # docker command
