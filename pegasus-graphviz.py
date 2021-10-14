@@ -81,7 +81,9 @@ class Node:
 class Job(Node):
     def __init__(self):
         Node.__init__(self)
-        self.xform = None
+        self.xform       = None
+        self.cdo_watcher = False
+        self.cdo_cache   = False
 
     def renderNode(self, renderer):
         if renderer.label_type == "xform":
@@ -103,27 +105,36 @@ class Job(Node):
         else:
             label = self.label
         color = renderer.getcolor(self.xform)
-        renderer.renderNode(self.id, label, color)
+        
+        # watcher node
+        if self.cdo_watcher:
+            renderer.renderNode(self.id, self.label, fillcolor="#efefff", shape="plaintext")
+        
+        # cache node
+        elif self.cdo_cache:
+            renderer.renderNode(self.id, self.label, fillcolor="#9f9fff", shape="box3d")
+
+        else:
+            renderer.renderNode(self.id, label, color)
 
 
 class File(Node):
     def __init__(self):
         Node.__init__(self)
+        self.cdo_data       = False
+        self.cdo_disabled   = False
         self.cdo_dependency = False
-        self.cdo_cached     = False
 
     def renderNode(self, renderer):
-        print('Rendering',self.label)
-        if self.label.startswith('CDO'):
-            renderer.renderNode(self.id, self.label, fillcolor="#9f9f9f", shape="parallelogram")
-        elif self.label.startswith('('):
-            renderer.renderNode(self.id, self.label, fillcolor="#ffffff", shape="plaintext")
-        elif not self.cdo_dependency:
+        # this is a CDO object
+        if self.cdo_data:
+            renderer.renderNode(self.id, "O " + self.label, fillcolor="#9f9fff", shape="component")                              
+        elif self.cdo_disabled:
+            renderer.renderNode(self.id, self.label, fillcolor="#808080", shape="rect")
+        else :
             renderer.renderNode(self.id, self.label, fillcolor="#ffed6f", shape="rect")
-        else:
-            renderer.renderNode(self.id, self.label, fillcolor="#ffffff", shape="diamond")
-#         if self.cdo_cached:
-#             renderer.renderNode(self.id, self.label, fillcolor="#000000", shape="circle")
+        # if self.cdo_cached:
+        #     renderer.renderNode(self.id, self.label, fillcolor="#000000", shape="circle")
         
 def parse_yamlfile(fname, include_files):
     """
@@ -154,19 +165,26 @@ def parse_yamlfile(fname, include_files):
             j.label = ""
 
         # parse uses (files)
-        if include_files:                
+        if include_files:
+            if 'metadata' in job:
+                if 'cdo_cache' in job['metadata']:
+                    j.cdo_cache = True
+                if 'cdo_watcher' in job['metadata']:
+                    j.cdo_watcher = True
+                    
             for use in job["uses"]:
                 if use["lfn"] in dag.nodes:
                     f = dag.nodes[use["lfn"]]
                 else:
                     f = File()
                     f.id = f.label = use["lfn"]
-                    if 'metadata' in use:
+                    if 'metadata' in use:             
+                        if 'cdo_data' in use['metadata']:
+                            f.cdo_data = True
+                        if 'cdo_disabled' in use['metadata']:
+                            f.cdo_disabled = True
                         if 'cdo_dependency' in use['metadata']:
                             f.cdo_dependency = True
-                        if 'cdo_cache' in use['metadata']:
-                            f.cdo_cached = True
-                            #print('Inserting a diamond for',f)
                     dag.nodes[f.id] = f
 
                 link_type = use["type"]

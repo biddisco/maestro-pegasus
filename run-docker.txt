@@ -1,5 +1,11 @@
-docker container run -p 8888:8888 --privileged --ulimit memlock=-1:-1 --mount type=bind,source="$(pwd)"/shared-data,target=/home/scitech/shared-data biddisco/pegasus
+# Start container using container entry function (jupyter lab) : assign name "pegasus"
+docker container run --rm --name pegasus -p 8888:8888 --privileged --ulimit memlock=-1:-1 --mount type=bind,source="$(pwd)"/shared-data,target=/home/scitech/shared-data biddisco/pegasus
 
-# In interactive mode
-# docker container run -it -p 8888:8888 --privileged --mount type=bind,source="$(pwd)"/shared-data,target=/home/scitech/shared-data biddisco/pegasus /bin/bash
+# Start container interactively with bash shell : assign name "pegasus"
+docker container run --rm --name pegasus -it -p 8888:8888 --privileged --ulimit memlock=-1:-1 --mount type=bind,source="$(pwd)"/shared-data,target=/home/scitech/shared-data biddisco/pegasus /bin/bash
 
+# Join new bash shell to running container
+docker exec -it pegasus /bin/bash
+
+# Build the docker image, pass mocktage commit
+docker build . --rm --build-arg MOCKTAGE_SHA="96d4ede9ed8e67aa8e25a9f470bc6041a2bae045"
