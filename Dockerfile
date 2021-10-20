@@ -49,6 +49,7 @@ RUN chmod -R g+w /var/{lib,log,lock,run}/condor
 
 RUN chown -R scitech /home/scitech/
 
+RUN mkdir /etc/opt/slurm
 #
 # USER LAND
 #

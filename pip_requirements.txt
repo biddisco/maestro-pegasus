@@ -13,6 +13,7 @@ networkx
 pandas
 pydot
 pygraphviz
+python-hostlist
 recommonmark
 six
 sphinx

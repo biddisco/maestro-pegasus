@@ -1,0 +1,9 @@
+Instruction to exeecute pegasus workflow with Slurm and Sarus
+
+module load sarus
+sarus load biddisco_slurm.tgz biddisco_slurm:1.0
+salloc -N2 -C mc -A csstaff -t 1:00:00
+
+run -N1 --pty sarus run -t --mount=source=/etc/opt/slurm/slurm.conf,dst=/usr/local/etc/slurm.conf,type=bind --mount=source=/var/run/munge/munge.socket.2,dst=/var/run/munge/munge.socket.2,type=bind --mount=source=/etc/opt/slurm/policies_prolog,dst=/usr/local/etc/policies_prolog,type=bind --mount=source=$PWD,dst=/home/scitech/shared-data,type=bind --mount=source=/usr/lib64/slurm/cli_filter_SitePolicies.so,dst=/usr/local/lib/slurm/cli_filter_SitePolicies.so,type=bind load/library/biddisco_slurm:1.0 /bin/bash
+
+./execute_notebook.sh CDO-scriptonly-DAG-workflow.ipynb

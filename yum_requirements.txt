@@ -32,6 +32,7 @@ inotify-tools
 iptables
 java-1.8.0-openjdk
 java-1.8.0-openjdk-devel
+jansson
 lib*san
 libffi-devel
 libjpeg-turbo-devel
