@@ -109,11 +109,11 @@ class Job(Node):
 
         # watcher node
         if self.cdo_watcher:
-            renderer.renderNode(self.id, self.label, fillcolor="#efefff", shape="plaintext")
+            renderer.renderNode(self.id, "watcher\n" + self.label, fillcolor="#efefff", shape="plaintext")
         
         # cache node
         elif self.cdo_cache:
-            renderer.renderNode(self.id, self.label, fillcolor="#9f9fff", shape="box3d")
+            renderer.renderNode(self.id, "cache\n" + self.label, fillcolor="#9f9fff", shape="box3d")
 
         # poolmanager node
         elif self.cdo_pm:
@@ -134,13 +134,17 @@ class File(Node):
         self.cdo_data       = False
         self.cdo_disabled   = False
         self.cdo_dependency = False
+        self.dummy_file     = False
 
     def renderNode(self, renderer):            
         # this is a CDO object
         if self.cdo_data:
-            renderer.renderNode(self.id, "D " + self.label, fillcolor="#9f9fff", shape="component")                              
+            #renderer.renderNode(self.id, "D " + self.label, fillcolor="#9f9fff", shape="component")                              
+            renderer.renderNode(self.id, "cdo\n" + self.label, fillcolor="#9f9fff", shape="component")                              
         elif self.cdo_disabled:
             renderer.renderNode(self.id, self.label, fillcolor="#808080", shape="rect")
+        elif self.dummy_file:
+            renderer.renderNode(self.id, "dummy\n" + self.label, fillcolor="#ffed6f", shape="rect")
         else :
             if self.customcolor is not None:
                 color = self.customcolor
@@ -203,6 +207,8 @@ def parse_yamlfile(fname, include_files):
                             f.cdo_disabled = True
                         if 'cdo_dependency' in use['metadata']:
                             f.cdo_dependency = True
+                        if 'dummy_file' in use['metadata']:
+                            f.dummy_file = True;
                     dag.nodes[f.id] = f
 
                 link_type = use["type"]
