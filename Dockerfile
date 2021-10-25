@@ -14,6 +14,7 @@ RUN set -ex \
 SHELL ["/bin/bash", "-c"]
 
 RUN echo -e "ulimit -f 900000" >> /etc/bashrc
+RUN echo -e "ulimit -n 900000" >> /etc/bashrc
 RUN echo -e "ulimit memlock=-1:-1" >> /etc/bashrc
 
 RUN groupadd --gid 808 scitech-group
@@ -34,6 +35,7 @@ RUN curl -o /etc/yum.repos.d/condor.repo https://research.cs.wisc.edu/htcondor/y
 RUN rpm --import https://research.cs.wisc.edu/htcondor/yum/RPM-GPG-KEY-HTCondor
 RUN yum -y install condor minicondor
 RUN sed -i 's/condor@/scitech@/g' /etc/condor/config.d/00-minicondor
+RUN echo "NUM_CPUS = 256" >> /etc/condor/config.d/99-misc.conf
 
 # Get Slurm
 RUN cd /tmp && \
@@ -57,7 +59,9 @@ USER scitech
 
 WORKDIR /home/scitech
 
-RUN echo -e "condor_master > /dev/null 2>&1" >> /home/scitech/.bashrc
+RUN echo -e "condor_master > /dev/null 2>&1" >> /home/scitech/.profile
+RUN echo PS1=\"\\w\\$ \" >> /home/scitech/.profile
+RUN echo "export MSTRO_LOG_LEVEL=3" >> /home/scitech/.profile
 
 # Pegasus
 RUN git clone https://github.com/pegasus-isi/pegasus.git --depth 1 --branch 5.0 --single-branch \
@@ -73,8 +77,9 @@ RUN /home/scitech/pegasus/dist/pegasus/bin/pegasus-db-admin create
 RUN git clone https://gitlab.jsc.fz-juelich.de/maestro/maestro-core.git \
   &&  source /opt/rh/devtoolset-9/enable \
   &&  cd maestro-core   \
+  &&  git checkout base64 \
   &&  autoreconf -ifv   \
-  && ./configure --prefix=/home/scitech/maestro \
+  && ./configure CFLAGS="-g -O0" --prefix=/home/scitech/maestro \
   &&  make install
 
 # Montage
@@ -98,7 +103,7 @@ RUN git clone https://gitlab.jsc.fz-juelich.de/maestro/mocktage.git \
   && git checkout $MOCKTAGE_SHA \
   && mkdir build \
   && cd build \
-  && cmake -DMaestro_ROOT=/home/scitech/maestro -DMOCKTAGE_WITH_CPP=ON -DBOOST_INCLUDEDIR=/usr/include/boost169 -DBOOST_LIBRARYDIR=/usr/lib64/boost169 -DCMAKE_EXE_LINKER_FLAGS='-lrdmacm -libverbs' .. \
+  && cmake -DCMAKE_BUILD_TYPE=Debug -DMaestro_ROOT=/home/scitech/maestro -DMOCKTAGE_WITH_CPP=ON -DBOOST_INCLUDEDIR=/usr/include/boost169 -DBOOST_LIBRARYDIR=/usr/lib64/boost169 -DCMAKE_EXE_LINKER_FLAGS='-lrdmacm -libverbs' .. \
   && make -j4
 
 # Set Kernel for Jupyter (exposes PATH and PYTHONPATH for use when terminal from jupyter is used)
@@ -118,7 +123,8 @@ ENV LC_ALL en_US.UTF-8
 ENV PATH="/home/scitech/pegasus/dist/pegasus/bin:${PATH}:/usr/lib64/mpich/bin:/home/scitech/Montage/bin"
 ENV PYTHONPATH="/home/scitech/pegasus/dist/pegasus/lib64/python3.6/site-packages"
 
-WORKDIR /home/scitech/shared-data
+WORKDIR /home/scitech/shared-data/maestro-test
+RUN echo 'alias psu="ps -u \$USER -o pid,time,command"' >> ~/.profile
 
 CMD ["jupyter", "lab", "--notebook-dir=/home/scitech/shared-data", "--port=8888", "--no-browser", "--ip=0.0.0.0", "--ServerApp.token=''", "--allow-root" ]
 
