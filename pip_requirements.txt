@@ -3,7 +3,9 @@ MontagePy
 PyYAML
 astropy
 breathe
+futures
 graphviz
+humanfriendly
 ipyplot
 javasphinx
 jupyter
