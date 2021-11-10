@@ -12,6 +12,7 @@ import os
 def execute_ssh_shell(host, script):
     commands = 'ssh -T ' + host + '\n' + script
     process = subprocess.Popen('/bin/bash', stdin=subprocess.PIPE, stdout=subprocess.PIPE, encoding='utf-8')
+    #print('Sending command', commands)
     out, err = process.communicate(commands)
     return out
 
@@ -23,36 +24,65 @@ def execute_local_shell(script):
     return out
 
 # -------------------------------------------------------------------
-# execute srun command locally to launch job on node
-def execute_srun(host, command):
-    commands = 'srun -w ' + host + ' ' + script
-    process = subprocess.Popen('/bin/bash', stdin=subprocess.PIPE, stdout=subprocess.PIPE, encoding='utf-8')
-    out, err = process.communicate(commands)
-    return out
+# execute srun command locally to launch job on node remotely
+def execute_srun(executor, job_id, host, command):
+    commands = f'srun --jobid={job_id} -w {host} -n 1 -c 1 --overcommit --overlap'
+    commands = commands.split(' ') + command
+    cstr1 = ' '.join(commands) 
+    print('SLURM executing', cstr1)    
+    future = executor.submit(subprocess.run, commands, stdout=subprocess.PIPE)
+    return future
 
 # -------------------------------------------------------------------
 # get a SLURM nodelist and expand it into a list of node names
 def get_slurm_nodelist():
-    slurm_node_list = os.getenv('SLURM_JOB_NODELIST')
-    if slurm_node_list is None or slurm_node_list=='':
-        return ['localhost']
+    slurm_node_list = 'localhost'
+    if os.getenv('SLURM_JOB_NODELIST') is not None:
+        slurm_node_list = os.getenv('SLURM_JOB_NODELIST')
+    if slurm_node_list=='':
+        slurm_node_list = 'localhost'
     if slurm_node_list=='container':
-        return ['localhost']
+        slurm_node_list = 'localhost'
+        
     node_list = hostlist.expand_hostlist(slurm_node_list)
+    print('Got node list', node_list)
     return node_list
+
+# -------------------------------------------------------------------
+# get a SLURM nodelist and expand it into a list of node names
+def get_slurm_job():
+    slurm_node_id = os.getenv('SLURM_JOB_ID')
+    if slurm_node_id is None or slurm_node_id=='':
+        return 0
+    job_id = int(slurm_node_id)
+    print('Got job_id', job_id)
+    return job_id
+
+# -------------------------------------------------------------------
+def get_lstopo(node):
+    # default lstopo location
+    lstopo = '/usr/bin/lstopo-no-graphics'
+    
+    # override if env var set
+    if os.getenv('LSTOPO') is not None:
+        lstopo = os.getenv('LSTOPO')
+        print('lstopo is', lstopo)
+    else:
+        if 'oryx' in node:
+            lstopo = 'LSTOPO=/home/biddisco/opt/spack.git/var/spack/environments/dev/.spack-env/view/bin/lstopo-no-graphics'
+        elif 'daint' in node or 'nid' in node:
+            lstopo = 'LSTOPO=/apps/daint/UES/jenkins/7.0.UP02-20.11/mc/easybuild/software/hwloc/2.4.1/bin/lstopo-no-graphics'
+        print('Please set env var LSTOPO : using :', lstopo)
+    return lstopo
 
 # -------------------------------------------------------------------
 # get number of sockets, numa domains, cores, pus, memory for a node
 # we should get hwloc paths from the remote environment, or radle, but for now - use hardcoded 
 def get_node_compute_data(node):
-    if node=='container':
-        lstopo = 'LSTOPO=/usr/bin/lstopo-no-graphics'
-    elif node=='' or node=='localhost':
-        lstopo = 'LSTOPO=/home/biddisco/opt/spack.git/var/spack/environments/dev/.spack-env/view/bin/lstopo-no-graphics'
-    else:
-        lstopo = 'LSTOPO=/apps/daint/UES/jenkins/7.0.UP02-20.11/mc/easybuild/software/hwloc/2.4.1/bin/lstopo-no-graphics'
-        
-    command = lstopo + '''
+    # default lstopo location
+    lstopo = get_lstopo(node)
+            
+    command = 'LSTOPO=' + lstopo + '''
     sockets=$( $LSTOPO | grep Package | wc -l )
     numanodes=$( $LSTOPO | grep NUMANode | wc -l )
     cores=$( $LSTOPO | grep Core | wc -l )
@@ -63,6 +93,8 @@ def get_node_compute_data(node):
         info = execute_ssh_shell(node, command)
     else:
         info = execute_local_shell(command)
+        
+    print('Node data', info)
     # get the last non empty string
     last = next(s for s in reversed(info.split('\n')) if s)
     data = last.split(':')
@@ -79,6 +111,7 @@ def get_all_node_data(node_list):
             node = future_to_data[future]
             try:
                 data = future.result()
+                print('Node data is', data)
             except Exception as exc:
                 print('%r generated an exception: %s' % (node, exc))
             else:
@@ -166,17 +199,20 @@ class splinter_workflow:
     _cpu_avail = {}
     _mem_avail = {}
     _max_jobs  = 1;
-
+    _job_id    = 0
+    
     # -------------------------------------------------------------------
     # construct. Init the resource pool with whatever nodes we have
     def __init__(self):
-        node_list = get_slurm_nodelist()
+        self._job_id = get_slurm_job()
+        node_list = get_slurm_nodelist()        
         node_info = get_all_node_data(node_list)
         for node, data in node_info.items(): 
             print('node', node, 'sockets {}, numa {}, cores {}, pus {}, memory(GB) {}'
                   .format(data[0], data[1], data[2], data[3], int(data[4]/(1024*1024*1024))))
             # we will store tuple(cpus, memory) in our resource list
             self._resource_pool[node] = (int(data[2]), data[4])
+            
         
     # -------------------------------------------------------------------
     # This should be called before executing a new workflow to ensure
@@ -277,7 +313,7 @@ class splinter_workflow:
     # -------------------------------------------------------------------
     # this function will execute a graph of work
     # the user must create tasks, with dependencies and 
-    def execute_workflow(self, poll_frequency):
+    def execute_workflow(self, poll_frequency, srun):
         self._pending_task_array = self._task_array
 
         # initialize resource lists
@@ -289,20 +325,27 @@ class splinter_workflow:
                 print()
                 completed_task_id_array = [task.task_id() for task in self._completed_task_array]
                 pending_task_id_array = [task.task_id() for task in self._pending_task_array]
-                print('Poll loop', poll_loop, ' : Completed tasks', completed_task_id_array,
-                    ' : Pending tasks', pending_task_id_array)
+                in_flight_id_array    = [status.task().task_id() for status in self._task_status_array]
+
+                print('Poll loop', poll_loop, 
+                      '\nCompleted tasks', completed_task_id_array,
+                      '\nPending tasks', pending_task_id_array,
+                      '\nIn flight', in_flight_id_array)
                 
                 # Launch as many tasks as possible in each polling window
                 task = self.find_next_task()
                 while task is not None:
-                    print("Submitting Job", task.task_id(), task.command())
-                    future = executor.submit(subprocess.run, task.command(), stdout=subprocess.PIPE)
+                    print("Submitting Job", task.task_id(), task.command())                    
+                    if srun:
+                        future = execute_srun(executor, self._job_id, task.node(), task.command())
+                    else:
+                        future = executor.submit(subprocess.run, task.command(), stdout=subprocess.PIPE)
                     self._task_status_array.append(task_status(task, future))
                     # any more tasks ready to execute?
                     task = self.find_next_task()
 
                 # Clear as many tasks as possible in each polling window
-                completed_task_status = self.completed_task_status()                        
+                completed_task_status = self.completed_task_status()
                 while completed_task_status is not None:
                     node = completed_task_status.task().node()
                     print('Job {} Completed : node {}, cpus {}, GB {}'
@@ -321,10 +364,10 @@ class splinter_workflow:
 if __name__ == "__main__":
     gigabyte = 1024 * 1024 * 1024
     wf = splinter_workflow()
-    
+   
     wf.add_task(task(1, ["./test/tester", "10"], [],  1, 1*gigabyte))
     wf.add_task(task(2, ["./test/tester", "1"],  [],  1, 1*gigabyte))
     wf.add_task(task(3, ["./test/tester", "5"],  [2], 1, 1*gigabyte))
     wf.add_task(task(4, ["./test/tester", "1"],  [1], 1, 1*gigabyte))
 
-    wf.execute_workflow(2)
+    wf.execute_workflow(2,True)

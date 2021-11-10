@@ -2,7 +2,7 @@ GitPython
 MontagePy
 PyYAML
 astropy
-breathe
+#breathe
 futures
 graphviz
 humanfriendly
@@ -18,9 +18,9 @@ pygraphviz
 python-hostlist
 recommonmark
 six
-sphinx
-sphinx_rtd_theme
-sphinxcontrib-openapi
+#sphinx
+#sphinx_rtd_theme
+#sphinxcontrib-openapi
 tox
 wand
 web-pdb
