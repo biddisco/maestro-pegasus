@@ -189,7 +189,7 @@ def parse_yamlfile(fname, include_files):
                     j.cdo_cache = True
                 if 'cdo_watcher' in job['metadata']:
                     j.cdo_watcher = True
-                if 'cdo_poolmanager' in job['metadata']:
+                if 'maestro_poolmanager' in job['metadata']:
                     j.cdo_pm = True
                 if 'node_colour' in job['metadata']:
                     j.customcolor = job['metadata']['node_colour']

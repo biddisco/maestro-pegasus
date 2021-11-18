@@ -2,11 +2,12 @@
 touch ~/scratch/pool-manager.stop
 sleep 1
 rm -rf ~/commands.txt   
+rm -rf commands.txt
 rm -rf wf-scratch wf-output scitech
-find . -name \*.dot -delete
-find . -name \*.pdf -delete
-find . -name \*.png -delete
-find . -name \*.yml -delete
+rm -rf *.dot
+rm -rf *.pdf
+rm -rf *.png
+rm -rf *.yml
 rm -rf /home/scitech/shared-data/sites.yml
 rm -rf /home/scitech/shared-data/pegasus.properties
 rm -rf /home/scitech/shared-data/binaries/f*

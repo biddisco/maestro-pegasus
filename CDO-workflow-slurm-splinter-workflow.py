@@ -9,6 +9,7 @@ import importlib
 import inspect
 import pprint
 import os
+from datetime import datetime
 
 from pathlib import Path
 #
@@ -19,14 +20,15 @@ import subprocess
 import time
 import concurrent.futures
 
-# import splinter
-slurm_splinter = importlib.import_module("slurm-splinter")
-importlib.reload(slurm_splinter)
+splinter = importlib.import_module("splinter")
+importlib.reload(splinter)
 
+import timeit
 import yaml as yaml
 import itertools
 import copy
 import logging
+import random
 #logging.basicConfig(level=logging.INFO
 
 
@@ -57,23 +59,38 @@ def save_notebook():
             # save this notebook as a raw python file as well please
             get_ipython().system('jupyter nbconvert --to script CDO-workflow-slurm-splinter-workflow.ipynb')
         except:
-            ...
+            pass
 
 
 # In[3]:
 
 
 hostname = os.getenv('HOSTNAME')
+user     = os.getenv('USER')
+if user is None:
+    user = 'biddisco'
+print('Hostname is', hostname)
+
+# default parths for container
 BINARY_PATH  ='/home/scitech/shared-data/maestro-test/binaries/'
 MOCKTAGE_PATH='/home/scitech/mocktage/build/bin/'
 DATA_PATH    ='/home/scitech/shared-data/maestro-test/binaries/data/'
 SCRATCH_PATH ='/home/scitech/scratch/'
+BEEGFS_PATH  =SCRATCH_PATH
 
+if ('oryx' in hostname):
+    BINARY_PATH  ='/home/biddisco/src/maestro/pegasus-workflow-development-environment/shared-data/maestro-test/binaries/'
+    MOCKTAGE_PATH='/home/biddisco/build/maestro/mocktage/bin/'
+    DATA_PATH    ='/home/biddisco/src/maestro/pegasus-workflow-development-environment/shared-data/maestro-test/binaries//data/'
+    SCRATCH_PATH ='/home/biddisco/temp/maestro/'
+    BEEGFS_PATH  =SCRATCH_PATH
+    
 if ('daint' in hostname) or ('nid' in hostname):
     BINARY_PATH  ='/scratch/snx3000/biddisco/shared-data/maestro-test/binaries/'
     MOCKTAGE_PATH='/scratch/snx3000/biddisco/maestro/mocktage/bin/'
     DATA_PATH    ='/scratch/snx3000/biddisco/shared-data/maestro-test/binaries/data/'
-    SCRATCH_PATH ='/scratch/snx3000/biddisco/maestro-scratch/'
+    SCRATCH_PATH ='/scratch/snx3000/' + user + '/maestro-scratch/'    
+    BEEGFS_PATH  ='/users/' + user + '/beegfs/'
 
 
 # In[4]:
@@ -179,9 +196,40 @@ def build_properties():
 # In[7]:
 
 
+def is_watcher(job):
+    return ('cdo_watcher' in job.metadata)
+
+def is_cache(job):
+    return ('cdo_cache' in job.metadata)
+
+def node_memory(job):
+    if 'maestro_mem' in job.metadata:
+        return int(float(job.metadata['maestro_mem']))
+    return None
+
+def node_cores(job):
+    if 'maestro_cores' in job.metadata:
+        return int(float(job.metadata['maestro_cores']))
+    return None
+
+
+# In[8]:
+
+
 LOG_LEVEL = "0"
+GB = 1024 * 1024 * 1024
         
 global_component_id = 0
+
+def current_milli_time():
+    return round(time.time() * 1000)
+
+def start_id_offset(enable_time):
+    if enable_time:
+        now = current_milli_time()
+        now = now % 100000
+        return now
+    return 0
 
 def next_id_string(): 
     global global_component_id
@@ -193,7 +241,7 @@ def cdo_name(file):
     return file # 'CDO-' + file
 
 
-# In[25]:
+# In[9]:
 
 
 class CDO:
@@ -215,12 +263,16 @@ class Maestro_Workflow(Workflow):
         super().__init__(name, infer_dependencies)
         self.parent_tasks = {}
         self.cdo_dependency = cdo_dependency
-        self.pool_manager = Job("start-pool-manager.sh", node_label="start-pool-manager")                            .add_args(SCRATCH_PATH, "pool_manager.stop", MOCKTAGE_PATH + "/pool_manager", SCRATCH_PATH + "/pminfo")                             .add_metadata(maestro_workflow_core_backend="minio", cdo_poolmanager='true')
+        self.pool_manager = Job("start-pool-manager.sh", node_label="start-pool-manager")                            .add_args(SCRATCH_PATH, "pool_manager.stop", MOCKTAGE_PATH + "/pool_manager", SCRATCH_PATH + "/pminfo")                             .add_metadata(maestro_mem=2*GB, 
+                                          maestro_cores=3,
+                                          maestro_workflow_core_backend="minio", 
+                                          maestro_poolmanager='true')
         self.pool_manager_startup = start_pool_manager
         
         if self.pool_manager_startup:
             super().add_jobs(self.pool_manager)
-        # .add_outputs(File("pool_io"))\
+        else:
+            print('WARNING: pool manager startup was turned off')
         
     # find the input to a job that generates the named output
     def find_parent_dependency(self, output):
@@ -236,31 +288,26 @@ class Maestro_Workflow(Workflow):
         print('No parent for', output)
         return output
 
-    def is_watcher(self, job):
-        return ('cdo_watcher' in job.metadata)
-    
-    def is_cache(self, job):
-        return ('cdo_cache' in job.metadata)
-    
+    def compute_memory_use(self):
+        # Before we transform the graph and convert files to CDOs, we will tag
+        # all jons with the amount of memory they 'should' need, based on their
+        # input files sizes and output file sizes
+        for id, job in self.jobs.items():
+            mem = 0
+            for ip in job.get_inputs():
+                mem = mem + node_memory(ip)
+            for op in job.get_outputs():
+                mem = mem + node_memory(op)
+            oldmem = node_memory(job)
+            if oldmem is not None and oldmem!=mem and mem>0:
+                print("Job memory mismatch : oldmem", oldmem, "new", mem)
+            job.add_metadata(maestro_mem=int(mem*1.5))            
+        
     #
     # This is the main routine that walks the graph and converts files to CDOs
     # inserts watchers and cache objects.
     #
     def insert_cdo_jobs(self):        
-        # Show input output file objects to see which are shared objects
-        # for debugging only
-        if False:
-            for id, job in self.jobs.items():
-                for u in job.uses:
-                    #print(object.__repr__(u.file), u.file.lfn)
-                    ...
-                for ip in job.get_inputs():
-                    #print('Input', ip, ip.lfn)
-                    ...
-                for op in job.get_outputs():
-                    #print('Output', op, op.lfn)
-                    ...
-        
         # note that we must rename input and outputs using new file objects
         # to work around shared files that are both input and outputs
         # and are replaced by CDO objects
@@ -307,14 +354,16 @@ class Maestro_Workflow(Workflow):
                         watcher.add_outputs(File(trigger_name).add_metadata(dummy_file='true'), stage_out=True)
                         watcher.add_args('-l', SCRATCH_PATH,     # log directory 
                                          '-p', 'pminfo',         # pool manager info
+                                         '-w',                   # watcher mode
                                          '-t', trigger_name,     # trigger_file for pegasus
                                          '-c', id_string,        # component name, must be unique
                                          '-i', ip_name)          # list of input CDOs to consume
-                        watcher.add_metadata(cdo_watcher='true')
+                        watcher.add_metadata(cdo_watcher='true', maestro_mem=1*GB, maestro_cores=2)
                         watchers[node_label] = watcher
                         
                         id_string = next_id_string()
                         #cache_label = id_string # REMOVE AFTER DEBUGGING
+                        mem = node_memory(ip)
                         cache = Job("process-CDO", _id=id_string, node_label = id_string) # cache_label)
                         cache.add_env(MSTRO_LOG_LEVEL=LOG_LEVEL)
                         cache.add_inputs(pseudo_parent) 
@@ -323,7 +372,7 @@ class Maestro_Workflow(Workflow):
                                        '-c', id_string,        # component name, must be unique
                                        '-g',                   # stager mode, copies in to out (cache)
                                        '-i', ip_name)          # list of input CDOs to consume
-                        cache.add_metadata(cdo_cache='true')
+                        cache.add_metadata(cdo_cache='true', maestro_mem=2*mem)
 
                         # add the cache object for lookup later
                         cdo_objs[ip_name].cache = cache
@@ -345,10 +394,13 @@ class Maestro_Workflow(Workflow):
             if "final_job" in job.metadata:
                 # print ('final job', id, 'corresponds to', job.node_label)
                 newjob = Job("stop-pool-manager.sh", node_label="stop-pool-manager")
-                newjob.add_args(SCRATCH_PATH, 'pool_manager.stop')                     .add_metadata(cdo_poolmanager='true')
+                newjob.add_args(SCRATCH_PATH, 'pool_manager.stop')                     .add_metadata(maestro_poolmanager='true', 
+                                  maestro_mem=0.5*GB, 
+                                  maestro_cores=1)
                 for op in job.get_outputs():
                     newjob.add_inputs(op.lfn)
-                extra_jobs.append(newjob)
+                if self.pool_manager_startup:
+                    extra_jobs.append(newjob)
 
         for job in extra_jobs:
             if job._id is None:
@@ -368,22 +420,24 @@ class Maestro_Workflow(Workflow):
                         u.file = File(i_replacements[u.file.lfn]).add_metadata(dummy_file='true')
                     # Replace an output that we have changed to point to the CDO
                     if u._type == "output":
-                        # we add a watcher and a cache as dependencies of this CDO
-                        output_counts += ['2'] 
+                        # we add a watcher and a cache as dependencies of this CDO, but watcher is not counted
+                        output_counts += ['1'] 
                         # make sure the CDO cache is kept alive for N real consumers
                         cdo_objs[u.file.lfn].cache.add_args('-O', cdo_objs[u.file.lfn].input_count)
+                        cdo_objs[u.file.lfn].cache.add_metadata(maestro_cores=2)
+
                         if u.file.lfn in cdo_objs:
                             if self.cdo_dependency :
                                 u.file = File(o_replacements[u.file.lfn]).add_metadata(cdo_data='true') 
                             else:
                                 u.file = None
             # if there are multiple outputs, then specify consumer count for each
-            if len(output_counts)>1:
+            if len(output_counts)>0:
                 job.add_args('-O', *output_counts)
             # otherwise, assume 2 consumers (watcher + cache)
-            else:
+            elif not is_cache(job) and not is_watcher(job):                    
                 if job.transformation=='process-CDO':
-                    job.add_args('-O', '2')
+                    job.add_args('-O', '1')
                 else:
                     ...
                     #print(job)
@@ -395,7 +449,7 @@ class Maestro_Workflow(Workflow):
             # watchers always watch for the original CDO (no name change)
             # cache's will output a CDO with a new name (name change handled by cache itself)
             # other objects must rename their inbput file/cdo names to the renamed version
-            if self.is_watcher(job) or self.is_cache(job):
+            if is_watcher(job) or is_cache(job):
                 ...
             else:
                 new_args = []
@@ -448,7 +502,7 @@ class Maestro_Workflow(Workflow):
         # build parent/child dependency lists 
         self.build_dependencies()
         # create a splinter workflow
-        swf = slurm_splinter.splinter_workflow()
+        swf = splinter.splinter_workflow()
         
         for id, job in self.jobs.items():
             t_string = "None::" + job.transformation + "::None"
@@ -456,118 +510,186 @@ class Maestro_Workflow(Workflow):
             # convert any file objects to string pathnames in arg list
             command = [t_path] + [str(a) for a in job.args]
             parents = self.parent_tasks[id] if id in self.parent_tasks else []
-            cores = 1
-            memory = 4 * 1024 *1024 *1024
-            splinter_task = slurm_splinter.task(id, command, parents, cores, memory)
+            try:
+                memory = node_memory(job)
+                cores  = node_cores(job)
+            except:
+                print('Invalid JOB', job, job.args)
+                memory = None
+                cores  = None
+            if memory is None:
+                print('Invalid memory', job, job.args)
+            if cores is None:
+                print('Invalid cores', job, job.args)
+            splinter_task = splinter.task(id, command, parents, cores, memory)
             swf.add_task(splinter_task)
             
         # poll freq, use srun
-        swf.execute_workflow(2, srun)
+        swf.execute_workflow(0.1, srun)
 
 
-# In[26]:
+# In[10]:
 
 
 import re
-def regex_increment_first(instring):
+def regex_increment_first(instring, N):
     # preceeded by "-" : followed by "-"
-    out = re.sub('(?<=-)(\d+)(?=-)', lambda x: str(int(x.group(0)) + 1).zfill(2), instring)
+    out = instring
+    for i in range(0,N):
+        out = re.sub('(?<=-)(\d+)(?=-)', lambda x: str(int(x.group(0)) + 1).zfill(2), out)
     return out
 
-def regex_increment_last(instring):
+def regex_increment_last(instring, N):
     # preceeded by "-" : followed by EOL
-    out = re.sub('(?<=-)(\d+$)', lambda x: str(int(x.group(0)) + 1).zfill(2), instring)
+    out = instring
+    for i in range(0,N):
+        out = re.sub('(?<=-)(\d+$)', lambda x: str(int(x.group(0)) + 1).zfill(2), out)
     return out
 
-x = "f-04-05"
-#print(regex_increment_first(x))
-#print(regex_increment_last(x))
+# x = "f-04-05"
+# print(regex_increment_first(x,2))
+# print(regex_increment_last(x,3))
 
 
-# In[27]:
+# In[11]:
 
 
-def generate_demo_workflow(wf, rc, maestro=False, iterations=2, forks=2, subforks=2):
+def probability(p):
+    return (random.randint(1,100) <= p)
 
+# x0 = 0;
+# x1 = 0;
+# x2 = 0;
+# for a in range(0,10000):
+#     if probability(0):
+#         x0 += 1
+#     if probability(50):
+#         x1 += 1
+#     if probability(100):
+#         x2 += 1
+        
+# print(x0, x1, x2)
+
+
+# In[12]:
+
+
+def generate_demo_workflow(wf, rc, maestro=False, data_size=65536, id_offset=0, iterations=2, forks=2, subforks=2):
+
+    random.seed(a=123456)
+    
     # ---------------------------------------------------------
     # Create a single input file that will start our graph
-    fa = File("root-data.txt").add_metadata(creator="biddisco", cdo_disabled="true", maestro_enabled="false", node_label='root')
+    fa = File("root-data.txt").add_metadata(creator="biddisco", 
+                                            cdo_disabled="true", 
+                                            maestro_enabled="false", 
+                                            node_label='root',
+                                            maestro_mem = data_size)
     rc.add_replica(
        site="local", lfn=fa, pfn=Path(DATA_PATH).resolve() / "root-data.txt"
     )
     
     # ---------------------------------------------------------
     # Create a single job that will fork into N new files
-    files = []
-    for f in range(0,forks):
+    # Names are xxx-FORK-ITERATION
+    files = []    
+    for f in range(0,1): # originally N forks
         # create string "f-0N-00"
-        files.append(File("f-" + f"{f:0>2}" + "-00"))
+        files.append(File("f-" + f"{f:0>2}" + "-00").add_metadata(maestro_mem = data_size))
     
+    arg_defaults = ['-l', SCRATCH_PATH,   # log directory 
+                    '-p', 'pminfo',       # pool manager info
+                    '-b', BEEGFS_PATH,
+                    '-d', int(data_size)] # default cdo/file size
+    if not maestro:
+        arg_defaults += ['-F'] # filemode - no CDOs to be generated in this mode, just HDF5 files
+        
     id_string = next_id_string()
     node_label = "preprocess"
-    job_preprocess = Job("process-CDO", _id=id_string, node_label=id_string   )                                  .add_env(MSTRO_LOG_LEVEL=LOG_LEVEL)                                   .add_inputs(fa)                                                       .add_outputs(*files, stage_out=True)                                  .add_metadata(node_colour='#e959d9')                                  .add_args('-l', SCRATCH_PATH,           # log directory 
-                                      '-p', 'pminfo',               # pool manager info
+    
+    job_preprocess = Job("process-CDO", _id=id_string, node_label=id_string)                             .add_env(MSTRO_LOG_LEVEL=LOG_LEVEL)                                   .add_inputs(fa)                                                       .add_outputs(*files, stage_out=True)                                  .add_metadata(node_colour='#e959d9', maestro_cores=2)                             .add_args(*arg_defaults,
                                       '-c', id_string,              # component name, must be unique
                                       '-o', *[x for x in files])    # list of output CDOs to produce
-    print('args are', job_preprocess.args) 
+    # print('args are', job_preprocess.args) 
     
     
     # ---------------------------------------------------------
     # for each fork, produce a chain of iterations file_in->P->file_out processes
-    job_iter = []   
+    job_iter = []
     for i in range(0, iterations):
         out_files = []
         for f in range(0,forks):
+            
+            if f<len(files):
+                in_file = files[f]
+                out_name = regex_increment_last(in_file.lfn, 1)
+            else:
+                in_file = files[f % len(files)]
+                out_name = regex_increment_last(in_file.lfn, i+1)
+                for ff in range(0, 1 + (f % len(files))):
+                    out_name = regex_increment_first(out_name, f)
                 
-            in_name = files[f].lfn
-            #print('input name', in_name)
-            out_name = regex_increment_last(in_name)
-            #print('output iteration/fork', in_name)
-            f_out = File(out_name)            
+            in_name = in_file.lfn
+            f_out = File(out_name).add_metadata(maestro_mem=node_memory(in_file))
             out_files.append(f_out)
 
-            # on first iteration, add an extra fork+join to test our CDO stuff
-            if i==0 and subforks>1:
-                subfiles = []
-                # create a set of tasks that fork from a single input
-                for sf in range(0,subforks):
-                    sf_out = File(out_name + "-" + str(sf))
-                    subfiles.append(sf_out)
-                    id_string = next_id_string()
-                    node_label = sf_out.lfn
-                    forkjob = Job("process-CDO", _id=id_string, node_label=id_string)                                .add_metadata(node_colour='#1b9e77')                                 .add_env(MSTRO_LOG_LEVEL=LOG_LEVEL)                                  .add_inputs(files[f])                                                .add_outputs(sf_out, stage_out=True)                                 .add_args('-l', SCRATCH_PATH,     # log directory 
-                                          '-p', 'pminfo',         # pool manager info
-                                          '-c', id_string,        # component name, must be unique
-                                          '-i', files[f],         # (list of) input CDO(s) to consume
-                                          '-o', sf_out)           # output (default 1 consumer omitted)
-                    job_iter.append(forkjob)
-
-                # join all the tasks back into a single output    
-                id_string = next_id_string()
-                node_label = str(f)+"-process-" + str(i)
-                joinjob = Job("process-CDO", _id=id_string, node_label=id_string)                                .add_metadata(node_colour='#3b97be')                                .add_env(MSTRO_LOG_LEVEL=LOG_LEVEL)                                 .add_inputs(*subfiles)                                              .add_outputs(f_out, stage_out=True)                                 .add_args('-l', SCRATCH_PATH,           # log directory 
-                                          '-p', 'pminfo',               # pool manager info
-                                          '-c', id_string,              # component name, must be unique
-                                          '-i', *[x for x in subfiles], # (list of) input CDO(s) to produce
-                                          '-o', f_out)                  # output (default 1 consumer omitted)                
-                job_iter.append(joinjob)
-                
-            else:
-                id_string = next_id_string()
-                node_label = str(f)+"-process-" + str(i)
-                job_iter.append(Job("process-CDO", _id=id_string, node_label=id_string)                                .add_metadata(node_colour='#ff7fb3')                                .add_env(MSTRO_LOG_LEVEL=LOG_LEVEL)                                 .add_inputs(files[f])                                               .add_outputs(f_out, stage_out=True)                                 .add_args('-l', SCRATCH_PATH,           # log directory 
-                                          '-p', 'pminfo',               # pool manager info
-                                          '-c', id_string,              # component name, must be unique
-                                          '-i', files[f],               # list of input CDOs to produce
-                                          '-o', f_out))                 # output (default 1 consumer omitted)                
+            id_string = next_id_string()
+            node_label = str(f)+"-process-" + str(i)
+            job_iter.append(Job("process-CDO", _id=id_string, node_label=id_string)                            .add_metadata(node_colour='#ff7fb3', maestro_cores=2)                            .add_env(MSTRO_LOG_LEVEL=LOG_LEVEL)                             .add_inputs(in_file)                                           .add_outputs(f_out, stage_out=True)                             .add_args(*arg_defaults,
+                                      '-c', id_string,              # component name, must be unique
+                                      '-i', in_file,               # list of input CDOs to produce
+                                      '-o', f_out))                 # output (default 1 consumer omitted)                
                                 
+        #print('Files',i, files, out_files) 
         files = out_files
+            
+            # on first iteration, add an extra fork+join to test our CDO stuff
+#             if False and i==0 and subforks>1:
+#                 subfiles = []
+#                 # create a set of tasks that fork from a single input
+#                 for sf in range(0,subforks):
+                    
+#                     #if random.randint(1,5)==1:                        
+#                     #    sf_out.add_metadata(cdo_disabled="true")
+                    
+#                     sf_out = File(out_name + "-" + str(sf)).add_metadata(maestro_mem=node_memory(in_file))            
+#                     subfiles.append(sf_out)
+#                     id_string = next_id_string()
+#                     node_label = sf_out.lfn
+#                     forkjob = Job("process-CDO", _id=id_string, node_label=id_string)\
+#                                 .add_metadata(node_colour='#1b9e77', maestro_cores=2) \
+#                                 .add_env(MSTRO_LOG_LEVEL=LOG_LEVEL)  \
+#                                 .add_inputs(in_file)                \
+#                                 .add_outputs(sf_out, stage_out=True) \
+#                                 .add_args(*arg_defaults,
+#                                           '-c', id_string,        # component name, must be unique
+#                                           '-i', in_file,         # (list of) input CDO(s) to consume
+#                                           '-o', sf_out)           # output (default 1 consumer omitted)
+#                     job_iter.append(forkjob)
 
-    fd = File("f.o").add_metadata(final_output="true", cdo_disabled="true")
+#                 # join all the tasks back into a single output    
+#                 id_string = next_id_string()
+#                 node_label = str(f)+"-process-" + str(i)
+#                 joinjob = Job("process-CDO", _id=id_string, node_label=id_string)\
+#                                 .add_metadata(node_colour='#3b97be', maestro_cores=2)\
+#                                 .add_env(MSTRO_LOG_LEVEL=LOG_LEVEL) \
+#                                 .add_inputs(*subfiles)              \
+#                                 .add_outputs(f_out, stage_out=True) \
+#                                 .add_args(*arg_defaults,
+#                                           '-c', id_string,              # component name, must be unique
+#                                           '-i', *[x for x in subfiles], # (list of) input CDO(s) to produce
+#                                           '-o', f_out)                  # output (default 1 consumer omitted)                
+#                 job_iter.append(joinjob)
+                
+            # else:
+        
+
+    fd = File("f.o").add_metadata(final_output="true", 
+                                  cdo_disabled="true", 
+                                  maestro_mem = data_size)
     id_string = next_id_string()
     node_label = "analyze"
-    job_analyze = Job("process-CDO", _id=id_string, node_label=id_string)                                    .add_env(MSTRO_LOG_LEVEL="3")                                             .add_inputs(*files)                                                       .add_outputs(fd, stage_out=True)                                          .add_metadata(final_job='true', node_colour='#8a4f4f')                    .add_args('-l', SCRATCH_PATH,           # log directory 
-                              '-p', 'pminfo',               # pool manager info
+    job_analyze = Job("process-CDO", _id=id_string, node_label=id_string)                                    .add_env(MSTRO_LOG_LEVEL="0")                                             .add_inputs(*files)                                                       .add_outputs(fd, stage_out=True)                                          .add_metadata(final_job='true', node_colour='#8a4f4f', maestro_cores=2)                    .add_args(*arg_defaults,
                               '-c', id_string,              # component name, must be unique
                               '-i', *[x for x in files],    # list of input CDOs to produce
                               '-t', fd.lfn)                 # output (default 1 consumer omitted)                
@@ -576,6 +698,8 @@ def generate_demo_workflow(wf, rc, maestro=False, iterations=2, forks=2, subfork
     for j in job_iter:
         wf.add_jobs(j)
 
+    if isinstance(wf,Maestro_Workflow):
+        wf.compute_memory_use()
     if maestro:
         wf.insert_cdo_jobs()
         
@@ -585,7 +709,7 @@ def generate_demo_workflow(wf, rc, maestro=False, iterations=2, forks=2, subfork
     return wf.path.name
 
 
-# In[28]:
+# In[16]:
 
 
 # ---------------------------------------
@@ -601,8 +725,6 @@ display_files        = True
 transitive_reduction = True
 left_right           = True
 
-global_component_id = 1000
-
 if os.path.isfile("pegasus.properties"):
     os.remove("pegasus.properties")
 if os.path.isfile("sites.yml"):
@@ -614,32 +736,90 @@ sco = build_site_catalog()
 prp = build_properties()
 
 # ---------------------------------------
-# Generate workflows, one original, one maestro enabled
-global_component_id = 0
-wfo = Workflow(name="demo-orig.yml")
-build_transformation_catalog(wfo)
-
-global_component_id = 0
-wfm = Maestro_Workflow(cdo_dependencies, name="demo-maestro.yml", start_pool_manager=True, infer_dependencies=False)
-build_transformation_catalog(wfm)
-    
-# ---------------------------------------
 # Convert workflow into nice DAG display
-iterations = 4
-forks = 3
-subforks = 4
+iterations = 10
+forks = 8
+subforks = 0
 
-file1 = generate_demo_workflow(wfo, rco, iterations=iterations, forks=forks, subforks=subforks)
-file2 = generate_demo_workflow(wfm, rcm, maestro=True, iterations=iterations, forks=forks, subforks=subforks)
+# ---------------------------------------
+# Generate workflows, one original, one maestro enabled
+
+TIME_OFFSETS = True
+
+# global_component_id = start_id_offset(TIME_OFFSETS)
+# print('Time/Id offset is', global_component_id)
+# wfo = Workflow(name="demo-orig.yml")
+# build_transformation_catalog(wfo)
+# file1 = generate_demo_workflow(wfo, rco, iterations=iterations, forks=forks, subforks=subforks)
+
+# global_component_id = start_id_offset(TIME_OFFSETS)
+# print('Time/Id offset is', global_component_id)
+# wfm = Maestro_Workflow(cdo_dependencies, name="demo-maestro.yml", start_pool_manager=False, infer_dependencies=False)
+# build_transformation_catalog(wfm)
+# file2 = generate_demo_workflow(wfm, rcm, maestro=True,  iterations=iterations, forks=forks, subforks=subforks, data_size=1*GB)
+
+# global_component_id = start_id_offset(TIME_OFFSETS)
+# print('Time/Id offset is', global_component_id)
+# wff = Maestro_Workflow(cdo_dependencies, name="demo-filemode.yml", start_pool_manager=False, infer_dependencies=False)
+# build_transformation_catalog(wff)
+# file3 = generate_demo_workflow(wff, rcm, maestro=False, iterations=iterations, forks=forks, subforks=subforks)
 
 save_notebook()
+
+
+# In[17]:
+
+
+srun = False
+
+class GetOutOfLoop( Exception ):
+    pass
+
+count = 0
+
+PATH1 ='/scratch/snx3000/' + user + '/maestro-scratch/'    
+PATH2  ='/users/' + user + '/beegfs/'
+    
+try:
+    for size in [1*GB, 2*GB, 4*GB]:
+        for iterations in [10, 20, 30, 40, 50]:
+            for forks in [8,6,4,2]:
+                for fs in [PATH1, PATH2]:
+                    subforks=0
+
+                    # set the filesystem path we are using for this test
+                    BEEGFS_PATH = fs
+                    
+                    print(f'Args size {size}, iterations {iterations}, forks {forks}') 
+                    global_component_id = start_id_offset(TIME_OFFSETS)
+                    print('Time/Id offset is', global_component_id)
+                    wff = Maestro_Workflow(cdo_dependencies, name="demo-filemode.yml", start_pool_manager=False, infer_dependencies=False)
+                    build_transformation_catalog(wff)
+                    file3 = generate_demo_workflow(wff, rcm, maestro=False, iterations=iterations, forks=forks, subforks=subforks, data_size=size)
+
+                    start = time.time()
+                    wff.execute_using_splinter(srun)
+                    end = time.time()
+                    
+                    beegfs = False
+                    if 'beegfs' in fs:
+                        beegfs = True
+                        
+                    print(f'Args size {size}, iterations {iterations}, forks {forks}, beegfs {beegfs}, Time elapsed', end - start)
+                    count += 1
+                    if count>1:
+                        raise GetOutOfLoop
+except GetOutOfLoop:
+    pass
+
+print('Done')
 
 
 # In[ ]:
 
 
-srun = True
-wfm.execute_using_splinter(srun)
+#srun = True
+#wfm.execute_using_splinter(srun)
 
 
 # In[ ]:

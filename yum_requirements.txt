@@ -26,6 +26,7 @@ gnupg
 golang
 graphviz
 graphviz-devel-2.30.1-22.el7.x86_64
+hdf5-devel
 hwloc
 hwloc-devel
 inotify-tools
