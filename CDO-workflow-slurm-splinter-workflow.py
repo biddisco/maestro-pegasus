@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[22]:
 
 
 #! /usr/bin/env python3
@@ -9,6 +9,7 @@ import importlib
 import inspect
 import pprint
 import os
+import sys
 from datetime import datetime
 
 from pathlib import Path
@@ -29,10 +30,11 @@ import itertools
 import copy
 import logging
 import random
+from shutil import copyfile
 #logging.basicConfig(level=logging.INFO
 
 
-# In[2]:
+# In[23]:
 
 
 # =================================================================
@@ -62,38 +64,50 @@ def save_notebook():
             pass
 
 
-# In[3]:
+# In[24]:
+
+
+if not is_notebook:
+    print(sys.argv)
+    ARG_iterations = sys.argv[1]
+    ARG_forks      = sys.argv[2]
+    ARG_datasize   = sys.argv[3]
+    ARG_cdo        = sys.argv[4]    
+
+
+# In[25]:
 
 
 hostname = os.getenv('HOSTNAME')
 user     = os.getenv('USER')
+if hostname is None:
+    hostname = 'localhost'
 if user is None:
     user = 'biddisco'
-print('Hostname is', hostname)
+print(f'Hostname is {hostname}, User is {user}')
 
 # default parths for container
 BINARY_PATH  ='/home/scitech/shared-data/maestro-test/binaries/'
 MOCKTAGE_PATH='/home/scitech/mocktage/build/bin/'
 DATA_PATH    ='/home/scitech/shared-data/maestro-test/binaries/data/'
 SCRATCH_PATH ='/home/scitech/scratch/'
-BEEGFS_PATH  =SCRATCH_PATH
+BEEGFS_PATH  = ''
 
-if ('oryx' in hostname):
+if ('oryx' in hostname or 'localhost' in hostname):
     BINARY_PATH  ='/home/biddisco/src/maestro/pegasus-workflow-development-environment/shared-data/maestro-test/binaries/'
     MOCKTAGE_PATH='/home/biddisco/build/maestro/mocktage/bin/'
     DATA_PATH    ='/home/biddisco/src/maestro/pegasus-workflow-development-environment/shared-data/maestro-test/binaries//data/'
     SCRATCH_PATH ='/home/biddisco/temp/maestro/'
-    BEEGFS_PATH  =SCRATCH_PATH
     
 if ('daint' in hostname) or ('nid' in hostname):
     BINARY_PATH  ='/scratch/snx3000/biddisco/shared-data/maestro-test/binaries/'
     MOCKTAGE_PATH='/scratch/snx3000/biddisco/maestro/mocktage/bin/'
     DATA_PATH    ='/scratch/snx3000/biddisco/shared-data/maestro-test/binaries/data/'
-    SCRATCH_PATH ='/scratch/snx3000/' + user + '/maestro-scratch/'    
+    SCRATCH_PATH =os.getcwd()
     BEEGFS_PATH  ='/users/' + user + '/beegfs/'
 
 
-# In[4]:
+# In[26]:
 
 
 def build_transformation_catalog(wf):
@@ -134,7 +148,7 @@ def build_transformation_catalog(wf):
     wf.add_transformation_catalog(tc)
 
 
-# In[5]:
+# In[27]:
 
 
 def build_site_catalog():
@@ -181,7 +195,7 @@ def build_site_catalog():
     return sc
 
 
-# In[6]:
+# In[28]:
 
 
 def build_properties():
@@ -193,13 +207,14 @@ def build_properties():
     return props
 
 
-# In[7]:
+# In[29]:
 
 
 def is_watcher(job):
     return ('cdo_watcher' in job.metadata)
 
 def is_cache(job):
+    return False
     return ('cdo_cache' in job.metadata)
 
 def node_memory(job):
@@ -213,24 +228,29 @@ def node_cores(job):
     return None
 
 
-# In[8]:
+# In[30]:
 
 
 LOG_LEVEL = "0"
 GB = 1024 * 1024 * 1024
         
 global_component_id = 0
+global_offset = 0
 
 def current_milli_time():
     return round(time.time() * 1000)
 
 def start_id_offset(enable_time):
+    global global_offset
     if enable_time:
         now = current_milli_time()
         now = now % 100000
         return now
-    return 0
-
+    else:
+        temp = global_offset
+        global_offset += 100
+    return global_offset
+        
 def next_id_string(): 
     global global_component_id
     temp = global_component_id
@@ -241,15 +261,15 @@ def cdo_name(file):
     return file # 'CDO-' + file
 
 
-# In[9]:
+# In[31]:
 
 
 class CDO:
     def __init__(self, filename: str):
         self.filename    = filename
-        self.cached_name = 'cdo-cache-' + filename
+        #self.cached_name = 'cdo-cache-' + filename
         self.input_count = 0
-        self.cache       = None
+        #self.cache       = None
 
 # -----------------------------------------------------------
 # Define a subclass of the pegasus workflow object 
@@ -258,19 +278,29 @@ class CDO:
 #
 class Maestro_Workflow(Workflow):
     
-    def __init__(self, cdo_dependency, name: str, start_pool_manager=True, infer_dependencies: bool = True):
+    def __init__(self, cdo_dependency, name: str, pool_manager=True, dynamic_provisioning=False, infer_dependencies: bool = True):
         print("This is the init function")
         super().__init__(name, infer_dependencies)
-        self.parent_tasks = {}
-        self.cdo_dependency = cdo_dependency
-        self.pool_manager = Job("start-pool-manager.sh", node_label="start-pool-manager")                            .add_args(SCRATCH_PATH, "pool_manager.stop", MOCKTAGE_PATH + "/pool_manager", SCRATCH_PATH + "/pminfo")                             .add_metadata(maestro_mem=2*GB, 
-                                          maestro_cores=3,
-                                          maestro_workflow_core_backend="minio", 
-                                          maestro_poolmanager='true')
-        self.pool_manager_startup = start_pool_manager
+        self.parent_tasks         = {}
+        self.cdo_dependency       = cdo_dependency
+        self.pool_manager_startup = pool_manager
+        self.dynpro_startup       = dynamic_provisioning
         
         if self.pool_manager_startup:
-            super().add_jobs(self.pool_manager)
+            pool_manager = Job("start-pool-manager.sh", node_label="start\npool\nmanager")                            .add_args(SCRATCH_PATH, "pool_manager.stop", MOCKTAGE_PATH + "/pool_manager", SCRATCH_PATH + "/pminfo")                             .add_metadata(maestro_mem=2*GB, 
+                                          maestro_cores=4,
+                                          maestro_workflow_core_backend="beegfs", 
+                                          maestro_poolmanager='true')
+            super().add_jobs(pool_manager)
+        else:
+            print('WARNING: pool manager startup was turned off')
+        
+        if self.dynpro_startup:
+            dynpro = Job("start-dynpro.sh", node_label="start\ndynamic\nprovisioning")                            .add_metadata(maestro_mem=1*GB, 
+                                          maestro_cores=1,
+                                          maestro_workflow_core_backend="beegfs", 
+                                          maestro_dynpro='true')
+            super().add_jobs(dynpro)
         else:
             print('WARNING: pool manager startup was turned off')
         
@@ -336,7 +366,6 @@ class Maestro_Workflow(Workflow):
                     ip_name        = ip.lfn
                     trigger_name   = 'T-' + ip_name
                     node_label     = '' + ip_name
-                    cache_label    = '' + ip_name
                     
                     # track how many consumers are taking this CDO as an input
                     if not ip_name in cdo_objs:
@@ -358,32 +387,15 @@ class Maestro_Workflow(Workflow):
                                          '-t', trigger_name,     # trigger_file for pegasus
                                          '-c', id_string,        # component name, must be unique
                                          '-i', ip_name)          # list of input CDOs to consume
-                        watcher.add_metadata(cdo_watcher='true', maestro_mem=1*GB, maestro_cores=2)
+                        watcher.add_metadata(cdo_watcher='true', maestro_mem=1*GB, maestro_cores=5)
                         watchers[node_label] = watcher
-                        
-                        id_string = next_id_string()
-                        #cache_label = id_string # REMOVE AFTER DEBUGGING
-                        mem = node_memory(ip)
-                        cache = Job("process-CDO", _id=id_string, node_label = id_string) # cache_label)
-                        cache.add_env(MSTRO_LOG_LEVEL=LOG_LEVEL)
-                        cache.add_inputs(pseudo_parent) 
-                        cache.add_args('-l', SCRATCH_PATH,     # log directory 
-                                       '-p', 'pminfo',         # pool manager info
-                                       '-c', id_string,        # component name, must be unique
-                                       '-g',                   # stager mode, copies in to out (cache)
-                                       '-i', ip_name)          # list of input CDOs to consume
-                        cache.add_metadata(cdo_cache='true', maestro_mem=2*mem)
-
-                        # add the cache object for lookup later
-                        cdo_objs[ip_name].cache = cache
-                        
+                                               
                         # Add these new jobs to the actual DAG
                         extra_jobs.append(watcher)
-                        extra_jobs.append(cache)
                         
                     else:
-                        # print('Adding to', ip_name) 
                         cdo_objs[ip_name].input_count += 1
+                        #print('Count for', ip_name, cdo_objs[ip_name].input_count) 
                         
                     # any process that outputs this data will need to rename it to the new input name
                     o_replacements[ip_name] = ip_name
@@ -392,16 +404,16 @@ class Maestro_Workflow(Workflow):
                     i_replacements[ip_name] = trigger_name
                 
             if "final_job" in job.metadata:
-                # print ('final job', id, 'corresponds to', job.node_label)
-                newjob = Job("stop-pool-manager.sh", node_label="stop-pool-manager")
-                newjob.add_args(SCRATCH_PATH, 'pool_manager.stop')                     .add_metadata(maestro_poolmanager='true', 
-                                  maestro_mem=0.5*GB, 
-                                  maestro_cores=1)
-                for op in job.get_outputs():
-                    newjob.add_inputs(op.lfn)
                 if self.pool_manager_startup:
-                    extra_jobs.append(newjob)
-
+                    # print ('final job', id, 'corresponds to', job.node_label)
+                    stop_pm = Job("stop-pool-manager.sh", node_label="stop\npool\nmanager")
+                    stop_pm.add_args(SCRATCH_PATH, 'pool_manager.stop')                         .add_metadata(maestro_poolmanager='true', 
+                                      maestro_mem=0.5*GB, 
+                                      maestro_cores=4)
+                    for op in job.get_outputs():
+                        stop_pm.add_inputs(op.lfn)
+                    extra_jobs.append(stop_pm)
+                    
         for job in extra_jobs:
             if job._id is None:
                 job._id = self._get_next_job_id()
@@ -412,7 +424,14 @@ class Maestro_Workflow(Workflow):
         # because if we simply change the path/name, we might modify the same 'file' object on different 
         # jobs and we can get links between tasks we were not expecting
         for id, job in self.jobs.items():
+            # for each output, specify consumer count for each
             output_counts = []
+            for op in job.get_outputs():
+                if (op is not None) and op.lfn in cdo_objs:
+                    output_counts += [cdo_objs[op.lfn].input_count]
+                    job.add_args('-O', *output_counts)
+                    #print('Set O for', op.lfn, cdo_objs[op.lfn].input_count) 
+                    
             for u in job.uses:
                 if u.file.lfn in i_replacements:
                     # Replace an input that we have changed to point to the dummy file
@@ -421,25 +440,24 @@ class Maestro_Workflow(Workflow):
                     # Replace an output that we have changed to point to the CDO
                     if u._type == "output":
                         # we add a watcher and a cache as dependencies of this CDO, but watcher is not counted
-                        output_counts += ['1'] 
+                        # output_counts += ['1'] 
                         # make sure the CDO cache is kept alive for N real consumers
-                        cdo_objs[u.file.lfn].cache.add_args('-O', cdo_objs[u.file.lfn].input_count)
-                        cdo_objs[u.file.lfn].cache.add_metadata(maestro_cores=2)
+                        # cdo_objs[u.file.lfn].cache.add_args('-O', cdo_objs[u.file.lfn].input_count)
+                        # cdo_objs[u.file.lfn].cache.add_metadata(maestro_cores=2)                        
 
                         if u.file.lfn in cdo_objs:
                             if self.cdo_dependency :
                                 u.file = File(o_replacements[u.file.lfn]).add_metadata(cdo_data='true') 
                             else:
                                 u.file = None
-            # if there are multiple outputs, then specify consumer count for each
-            if len(output_counts)>0:
-                job.add_args('-O', *output_counts)
+                                
+                
             # otherwise, assume 2 consumers (watcher + cache)
-            elif not is_cache(job) and not is_watcher(job):                    
-                if job.transformation=='process-CDO':
-                    job.add_args('-O', '1')
-                else:
-                    ...
+            # elif not is_cache(job) and not is_watcher(job):                    
+            #     if job.transformation=='process-CDO':
+            #         job.add_args('-O', '1')
+            #     else:
+            #         ...
                     #print(job)
 
             job.uses = [x for x in job.uses if x.file is not None]
@@ -461,7 +479,7 @@ class Maestro_Workflow(Workflow):
                     if a == '-o':
                         input = False
                     if input and isinstance(a, File):
-                        cdo_name = 'cdo-cache-' + a.lfn
+                        cdo_name = a.lfn # 'cdo-cache-' + a.lfn
                         a = File(cdo_name)
                     new_args.append(a)
                 job.args = new_args
@@ -471,6 +489,19 @@ class Maestro_Workflow(Workflow):
         for d, val in self.dependencies.items():
             print('Dependency', d, val)
             
+    def insert_shutdown_jobs(self):
+        if self.dynpro_startup:
+            for id, job in self.jobs.items():                
+                if "final_job" in job.metadata:
+                    dynpro = Job("start-dynpro.sh", node_label="stop\ndynamic\nprovisioning")
+                    dynpro.add_args(SCRATCH_PATH, 'dynpro.stop')                         .add_metadata(maestro_dynpro='true', 
+                                      maestro_mem=0.5*GB, 
+                                      maestro_cores=1)
+                    for op in job.get_outputs():
+                        dynpro.add_inputs(op.lfn)
+            super().add_jobs(dynpro)
+                    
+        
     def execute_using_slurm(self):
         return        
     
@@ -528,7 +559,7 @@ class Maestro_Workflow(Workflow):
         swf.execute_workflow(0.1, srun)
 
 
-# In[10]:
+# In[32]:
 
 
 import re
@@ -551,7 +582,7 @@ def regex_increment_last(instring, N):
 # print(regex_increment_last(x,3))
 
 
-# In[11]:
+# In[33]:
 
 
 def probability(p):
@@ -571,7 +602,7 @@ def probability(p):
 # print(x0, x1, x2)
 
 
-# In[12]:
+# In[36]:
 
 
 def generate_demo_workflow(wf, rc, maestro=False, data_size=65536, id_offset=0, iterations=2, forks=2, subforks=2):
@@ -593,21 +624,22 @@ def generate_demo_workflow(wf, rc, maestro=False, data_size=65536, id_offset=0, 
     # Create a single job that will fork into N new files
     # Names are xxx-FORK-ITERATION
     files = []    
-    for f in range(0,1): # originally N forks
+    for f in range(0,forks): # originally N forks
         # create string "f-0N-00"
         files.append(File("f-" + f"{f:0>2}" + "-00").add_metadata(maestro_mem = data_size))
     
     arg_defaults = ['-l', SCRATCH_PATH,   # log directory 
                     '-p', 'pminfo',       # pool manager info
-                    '-b', BEEGFS_PATH,
                     '-d', int(data_size)] # default cdo/file size
+    
     if not maestro:
+        arg_defaults += ['-b', BEEGFS_PATH]
         arg_defaults += ['-F'] # filemode - no CDOs to be generated in this mode, just HDF5 files
         
     id_string = next_id_string()
     node_label = "preprocess"
     
-    job_preprocess = Job("process-CDO", _id=id_string, node_label=id_string)                             .add_env(MSTRO_LOG_LEVEL=LOG_LEVEL)                                   .add_inputs(fa)                                                       .add_outputs(*files, stage_out=True)                                  .add_metadata(node_colour='#e959d9', maestro_cores=2)                             .add_args(*arg_defaults,
+    job_preprocess = Job("process-CDO", _id=id_string, node_label=node_label)                             .add_env(MSTRO_LOG_LEVEL=LOG_LEVEL)                                   .add_inputs(fa)                                                       .add_outputs(*files, stage_out=True)                                  .add_metadata(node_colour='#e959d9', maestro_cores=4)                             .add_args(*arg_defaults,
                                       '-c', id_string,              # component name, must be unique
                                       '-o', *[x for x in files])    # list of output CDOs to produce
     # print('args are', job_preprocess.args) 
@@ -635,7 +667,7 @@ def generate_demo_workflow(wf, rc, maestro=False, data_size=65536, id_offset=0, 
 
             id_string = next_id_string()
             node_label = str(f)+"-process-" + str(i)
-            job_iter.append(Job("process-CDO", _id=id_string, node_label=id_string)                            .add_metadata(node_colour='#ff7fb3', maestro_cores=2)                            .add_env(MSTRO_LOG_LEVEL=LOG_LEVEL)                             .add_inputs(in_file)                                           .add_outputs(f_out, stage_out=True)                             .add_args(*arg_defaults,
+            job_iter.append(Job("process-CDO", _id=id_string, node_label=node_label)                            .add_metadata(node_colour='#ff7fb3', maestro_cores=5)                            .add_env(MSTRO_LOG_LEVEL=LOG_LEVEL)                             .add_inputs(in_file)                                           .add_outputs(f_out, stage_out=True)                             .add_args(*arg_defaults,
                                       '-c', id_string,              # component name, must be unique
                                       '-i', in_file,               # list of input CDOs to produce
                                       '-o', f_out))                 # output (default 1 consumer omitted)                
@@ -684,12 +716,12 @@ def generate_demo_workflow(wf, rc, maestro=False, data_size=65536, id_offset=0, 
             # else:
         
 
-    fd = File("f.o").add_metadata(final_output="true", 
+    fd = File("Output").add_metadata(final_output="true", 
                                   cdo_disabled="true", 
                                   maestro_mem = data_size)
     id_string = next_id_string()
     node_label = "analyze"
-    job_analyze = Job("process-CDO", _id=id_string, node_label=id_string)                                    .add_env(MSTRO_LOG_LEVEL="0")                                             .add_inputs(*files)                                                       .add_outputs(fd, stage_out=True)                                          .add_metadata(final_job='true', node_colour='#8a4f4f', maestro_cores=2)                    .add_args(*arg_defaults,
+    job_analyze = Job("process-CDO", _id=id_string, node_label=node_label)                                    .add_env(MSTRO_LOG_LEVEL="0")                                             .add_inputs(*files)                                                       .add_outputs(fd, stage_out=True)                                          .add_metadata(final_job='true', node_colour='#8a4f4f', maestro_cores=4)                    .add_args(*arg_defaults,
                               '-c', id_string,              # component name, must be unique
                               '-i', *[x for x in files],    # list of input CDOs to produce
                               '-t', fd.lfn)                 # output (default 1 consumer omitted)                
@@ -700,8 +732,10 @@ def generate_demo_workflow(wf, rc, maestro=False, data_size=65536, id_offset=0, 
 
     if isinstance(wf,Maestro_Workflow):
         wf.compute_memory_use()
-    if maestro:
-        wf.insert_cdo_jobs()
+        if maestro:
+            wf.insert_cdo_jobs()
+        else:
+            wf.insert_shutdown_jobs()
         
     wf.add_replica_catalog(rc)
     wf.write(file=wf.name)
@@ -709,7 +743,7 @@ def generate_demo_workflow(wf, rc, maestro=False, data_size=65536, id_offset=0, 
     return wf.path.name
 
 
-# In[16]:
+# In[37]:
 
 
 # ---------------------------------------
@@ -730,15 +764,16 @@ if os.path.isfile("pegasus.properties"):
 if os.path.isfile("sites.yml"):
     os.remove("sites.yml")
 
-rco = ReplicaCatalog()
-rcm = ReplicaCatalog()
+rc1 = ReplicaCatalog()
+rc2 = ReplicaCatalog()
+rc3 = ReplicaCatalog()
 sco = build_site_catalog()    
 prp = build_properties()
 
 # ---------------------------------------
 # Convert workflow into nice DAG display
-iterations = 10
-forks = 8
+iterations = 3
+forks = 5
 subforks = 0
 
 # ---------------------------------------
@@ -746,31 +781,34 @@ subforks = 0
 
 TIME_OFFSETS = True
 
-# global_component_id = start_id_offset(TIME_OFFSETS)
-# print('Time/Id offset is', global_component_id)
-# wfo = Workflow(name="demo-orig.yml")
-# build_transformation_catalog(wfo)
-# file1 = generate_demo_workflow(wfo, rco, iterations=iterations, forks=forks, subforks=subforks)
+global_component_id = 0
+print('Time/Id offset is', global_component_id)
+wfo = Workflow(name="demo-orig.yml")
+build_transformation_catalog(wfo)
+file1 = generate_demo_workflow(wfo, rc1, iterations=iterations, forks=forks, subforks=subforks)
 
-# global_component_id = start_id_offset(TIME_OFFSETS)
-# print('Time/Id offset is', global_component_id)
-# wfm = Maestro_Workflow(cdo_dependencies, name="demo-maestro.yml", start_pool_manager=False, infer_dependencies=False)
-# build_transformation_catalog(wfm)
-# file2 = generate_demo_workflow(wfm, rcm, maestro=True,  iterations=iterations, forks=forks, subforks=subforks, data_size=1*GB)
+global_component_id = 0
+print('Time/Id offset is', global_component_id)
+wfm = Maestro_Workflow(cdo_dependencies, name="demo-maestro.yml", pool_manager=True, infer_dependencies=False)
+build_transformation_catalog(wfm)
+file2 = generate_demo_workflow(wfm, rc2, maestro=True,  iterations=iterations, forks=forks, subforks=subforks, data_size=1*GB)
 
-# global_component_id = start_id_offset(TIME_OFFSETS)
-# print('Time/Id offset is', global_component_id)
-# wff = Maestro_Workflow(cdo_dependencies, name="demo-filemode.yml", start_pool_manager=False, infer_dependencies=False)
-# build_transformation_catalog(wff)
-# file3 = generate_demo_workflow(wff, rcm, maestro=False, iterations=iterations, forks=forks, subforks=subforks)
+global_component_id = 0
+print('Time/Id offset is', global_component_id)
+wff = Maestro_Workflow(cdo_dependencies, name="demo-beegfs.yml", pool_manager=False, dynamic_provisioning=True, infer_dependencies=False)
+build_transformation_catalog(wff)
+file3 = generate_demo_workflow(wff, rc3, maestro=False, iterations=iterations, forks=forks, subforks=subforks)
 
 save_notebook()
 
 
-# In[17]:
+# In[15]:
 
 
-srun = False
+if ('daint' in hostname) or ('nid' in hostname):
+    srun = True
+else:
+    srun = False
 
 class GetOutOfLoop( Exception ):
     pass
@@ -779,36 +817,71 @@ count = 0
 
 PATH1 ='/scratch/snx3000/' + user + '/maestro-scratch/'    
 PATH2  ='/users/' + user + '/beegfs/'
+TIME_OFFSETS = False
+
+if not is_notebook():
+    iterlist = [int(sys.argv[1])]
+    forklist = [int(sys.argv[2])]
+    sizelist = [int(sys.argv[3])]
+    cdolist  = [sys.argv[4]]
+else:
+    iterlist = [5, 10, 15, 20]
+    forklist = [2,4,6,8]
+    sizelist = [1*GB, 2*GB, int(3.99*GB)]
+    cdolist  = ['lustre'] # ['cdo','beegfs','lustre']
+
+# iterlist = [10]
+# forklist = [2]
+# sizelist = [1*GB]
+# cdolist  = ['lustre'] # ['cdo','beegfs','lustre']
+
+rc1 = ReplicaCatalog()
     
 try:
-    for size in [1*GB, 2*GB, 4*GB]:
-        for iterations in [10, 20, 30, 40, 50]:
-            for forks in [8,6,4,2]:
-                for fs in [PATH1, PATH2]:
+    for cdo in cdolist:
+        for forks in forklist:
+            for iterations in iterlist:
+                for size in sizelist:
+                    
+                    # for fs in [PATH1, PATH2]:
                     subforks=0
 
-                    # set the filesystem path we are using for this test
-                    BEEGFS_PATH = fs
-                    
                     print(f'Args size {size}, iterations {iterations}, forks {forks}') 
-                    global_component_id = start_id_offset(TIME_OFFSETS)
-                    print('Time/Id offset is', global_component_id)
-                    wff = Maestro_Workflow(cdo_dependencies, name="demo-filemode.yml", start_pool_manager=False, infer_dependencies=False)
-                    build_transformation_catalog(wff)
-                    file3 = generate_demo_workflow(wff, rcm, maestro=False, iterations=iterations, forks=forks, subforks=subforks, data_size=size)
-
+                    
+                    global_component_id = 0
+                    
+                    if cdo == 'cdo':
+                        SCRATCH_PATH =os.getcwd()
+                        BEEGFS_PATH  =os.getcwd()                        
+                        wff = Maestro_Workflow(cdo_dependencies, name="demo-cdo.yml", pool_manager=True , dynamic_provisioning=False, infer_dependencies=False)
+                        build_transformation_catalog(wff)
+                        file3 = generate_demo_workflow(wff, rc1, maestro=True, iterations=iterations, forks=forks, subforks=subforks, data_size=size)
+                    elif cdo=='beegfs':                        
+                        wff = Maestro_Workflow(cdo_dependencies, name="demo-beegfs.yml", pool_manager=False, dynamic_provisioning=False, infer_dependencies=False)
+                        build_transformation_catalog(wff)
+                        file3 = generate_demo_workflow(wff, rc1, maestro=False, iterations=iterations, forks=forks, subforks=subforks, data_size=size)
+                    elif cdo=='lustre':
+                        SCRATCH_PATH =os.getcwd()
+                        BEEGFS_PATH  =os.getcwd()                        
+                        # disabling dynamic provisioning to avoinf start/stopping it many times
+                        wff = Maestro_Workflow(cdo_dependencies, name="demo-filemode.yml", pool_manager=False, dynamic_provisioning=False, infer_dependencies=False)
+                        build_transformation_catalog(wff)
+                        file3 = generate_demo_workflow(wff, rc1, maestro=False, iterations=iterations, forks=forks, subforks=subforks, data_size=size)
+                    else:
+                        print("Error, wrong cdo/beegfs/lustre param")
+                        
                     start = time.time()
                     wff.execute_using_splinter(srun)
                     end = time.time()
-                    
-                    beegfs = False
-                    if 'beegfs' in fs:
-                        beegfs = True
-                        
-                    print(f'Args size {size}, iterations {iterations}, forks {forks}, beegfs {beegfs}, Time elapsed', end - start)
+                    elapsed = end-start
+                                            
+                    print(f'CSVData, Args_size, {size}, iterations, {iterations}, forks, {forks}, IO, {cdo}, Elapsed, {elapsed}')
+                    # stime = time.strftime("%Y-%m-%d.%H:%M:%S", time.gmtime())
+                    # os.rename('commands.txt', 'commands-' + stime + '.txt')
+
                     count += 1
-                    if count>1:
-                        raise GetOutOfLoop
+                    # if count>=1:
+                    #     raise GetOutOfLoop
 except GetOutOfLoop:
     pass
 

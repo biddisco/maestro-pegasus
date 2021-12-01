@@ -8,6 +8,13 @@ import hostlist
 import os
 
 # -------------------------------------------------------------------
+# reminder for when we set flags during debugging that need to be switched off on real runs
+def warning(msg):
+    print('='*25)
+    print(msg)
+    print('='*25)
+
+# -------------------------------------------------------------------
 # execute a multiline command/script on a node using ssh in a dedicated bash shell
 def execute_ssh_shell(host, script):
     commands = 'ssh -T ' + host + '\n' + script
@@ -26,7 +33,7 @@ def execute_local_shell(script):
 # -------------------------------------------------------------------
 # execute srun command locally to launch job on node remotely
 def execute_srun(executor, job_id, host, command):
-    commands = f'srun --jobid={job_id} -w {host} -n 1 -c 1 --overcommit --overlap'
+    commands = f'srun --jobid={job_id} -w {host} -u -N 1 -n 1 -c 1 --mem-per-cpu=0 --overcommit --overlap'
     commands = commands.split(' ') + command
     cstr1 = ' '.join(commands)
     print('SLURM executing', cstr1)
@@ -102,6 +109,8 @@ def get_node_compute_data(node):
     last = next(s for s in reversed(info.split('\n')) if s)
     data = last.split(':')
     data[5] = humanfriendly.parse_size(str(data[5]).replace('total=',''))
+    # warning('WARNING - Reducing core count by 4 per node')
+    # data[3] = data[3] - 4 
     return data
 
 # -------------------------------------------------------------------
@@ -141,6 +150,7 @@ class task:
         self._memory  = memory
         # convert any file objects to string pathnames in arg list
         self._dependent_task_array = dependent_task_array
+        print('Task', self._task_id, 'Depends on', self._dependent_task_array)
 
     def dependent_task_array(self):
         return self._dependent_task_array
@@ -283,17 +293,29 @@ class splinter_workflow:
     # This function changes resources available, so if it returns True,
     # you must launch the task, otherwise resources tracking will be incorrect
     def is_worker_available(self, task):
+        best_node = None
+        best_mem  = 0
         for (node1,cpus), (node2,mem) in zip(self._cpu_avail.items(), self._mem_avail.items()):
             if node1!=node2:
                 raise "Fatal : Nodes do not match in resource dictionaries"
             # if this task can run on this node
+            # pick the best node to use (based on memory avail)
             if cpus>task.cores() and mem>task.memory():
-                # decrement resources
-                self._cpu_avail[node1] = self._cpu_avail[node1]-task.cores()
-                self._mem_avail[node1] = self._mem_avail[node1]-task.memory()
-                task.set_node(node1)
-                print('node {}, cpus {}, GB {}'.format(node1, self._cpu_avail[node1], mem_gb(self._mem_avail[node1])))
-                return True
+                if best_node is not None:
+                    if mem>best_mem:
+                        best_node = node1
+                        best_mem = mem
+                else:
+                    best_node = node1
+                    best_mem = mem
+        if best_node is not None:
+            # decrement resources
+            self._cpu_avail[best_node] = self._cpu_avail[best_node] - task.cores()
+            self._mem_avail[best_node] = self._mem_avail[best_node] - task.memory()
+            task.set_node(best_node)
+            print('node {}, cpus {}, GB {}'.format(best_node, self._cpu_avail[best_node], mem_gb(self._mem_avail[best_node])))
+            return True        
+        # didn't fin a node with enough resources
         return False
 
     # -------------------------------------------------------------------

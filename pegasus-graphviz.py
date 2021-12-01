@@ -86,6 +86,7 @@ class Job(Node):
         self.cdo_watcher = False
         self.cdo_cache   = False
         self.cdo_pm      = False;
+        self.cdo_dynpro  = False
 
     def renderNode(self, renderer):
         if renderer.label_type == "xform":
@@ -118,6 +119,10 @@ class Job(Node):
         # poolmanager node
         elif self.cdo_pm:
             renderer.renderNode(self.id, self.label, fillcolor="#9fff9f", shape="egg")
+            
+        # dynamic provisioning node
+        elif self.cdo_dynpro:
+            renderer.renderNode(self.id, self.label, fillcolor="#6f6fff", shape="egg")
             
         else:
             if self.customcolor is not None:
@@ -191,6 +196,8 @@ def parse_yamlfile(fname, include_files):
                     j.cdo_watcher = True
                 if 'maestro_poolmanager' in job['metadata']:
                     j.cdo_pm = True
+                if 'maestro_dynpro' in job['metadata']:
+                    j.cdo_dynpro = True
                 if 'node_colour' in job['metadata']:
                     j.customcolor = job['metadata']['node_colour']
                     
